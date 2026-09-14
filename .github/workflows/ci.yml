@@ -33,9 +33,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          SDK_ROOT="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-/usr/local/lib/android/sdk}}"
           SDKMANAGER="$(command -v sdkmanager || true)"
           if [ -z "$SDKMANAGER" ]; then
-            SDK_ROOT="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-/usr/local/lib/android/sdk}}"
             SDKMANAGER="$SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
           fi
           test -x "$SDKMANAGER"
@@ -44,10 +44,21 @@ jobs:
             "platform-tools" \
             "platforms;android-36" \
             "build-tools;36.0.0" \
-            "ndk;28.2.13676358" \
-            "cmake;3.30.2"
+            "ndk;28.2.13676358"
+
+          CMAKE_ARCHIVE="$RUNNER_TEMP/cmake-3.30.2-linux-x86_64.tar.gz"
+          CMAKE_DIR="$RUNNER_TEMP/cmake-3.30.2-linux-x86_64"
+          curl --fail --location --retry 3 --output "$CMAKE_ARCHIVE" \
+            "https://github.com/Kitware/CMake/releases/download/v3.30.2/cmake-3.30.2-linux-x86_64.tar.gz"
+          echo "cdd7fb352605cee3ae53b0e18b5929b642900e33d6b0173e19f6d4f2067ebf16  $CMAKE_ARCHIVE" | sha256sum --check --strict
+          tar -xzf "$CMAKE_ARCHIVE" -C "$RUNNER_TEMP"
+
           sudo apt-get update
           sudo apt-get install -y ninja-build
+
+          printf 'sdk.dir=%s\ncmake.dir=%s\n' "$SDK_ROOT" "$CMAKE_DIR" > local.properties
+          "$CMAKE_DIR/bin/cmake" --version
+          ninja --version
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
