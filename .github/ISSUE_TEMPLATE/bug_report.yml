@@ -1,0 +1,26 @@
+name: Bug report
+description: Report a reproducible Kinetic bug
+title: "[Bug] "
+body:
+  - type: markdown
+    attributes:
+      value: "Do not include real API keys, credentials, private app data, or vulnerability details."
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What happened and what did you expect?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Reproduction
+      description: Minimal safe steps using fake data.
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Commit, Android/API level if relevant, and host toolchain.
