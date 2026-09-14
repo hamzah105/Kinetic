@@ -1,14 +1,43 @@
+# IDE / build artifacts
 *.iml
 .gradle/
 .idea/
+.kotlin/
 local.properties
 build/
 **/build/
 captures/
 .externalNativeBuild/
 .cxx/
+.tooling/
+.DS_Store
+*.log
 
-
+# Internal planning and private engineering documentation
 docs/
-
 roadmap.md
+PROMPT.txt
+
+# Secrets / signing material
+.env
+.env.*
+secrets.properties
+*.jks
+*.keystore
+*.p12
+*.pem
+
+# Model artifacts / local runtime data
+*.gguf
+*.bin
+*.safetensors
+
+# Local app data / databases
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+
+# Android outputs
+*.apk
+*.aab

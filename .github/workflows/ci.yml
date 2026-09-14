@@ -1,0 +1,65 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: kinetic-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  host-validation:
+    name: Host validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install pinned Android toolchain
+        shell: bash
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager \
+            "platforms;android-36" \
+            "build-tools;36.0.0" \
+            "ndk;28.2.13676358" \
+            "cmake;3.30.2"
+          sudo apt-get update
+          sudo apt-get install -y ninja-build
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Run host verification gate
+        shell: bash
+        run: |
+          chmod +x gradlew
+          ./gradlew \
+            --no-daemon \
+            --max-workers=2 \
+            --no-parallel \
+            -Pkotlin.compiler.execution.strategy=in-process \
+            :core:kernel:test \
+            :data:model:testDebugUnitTest \
+            :data:android-capabilities:testDebugUnitTest \
+            :app:testDebugUnitTest \
+            verifyDeviceTestSafety \
+            lintDebug \
+            assembleDebug
