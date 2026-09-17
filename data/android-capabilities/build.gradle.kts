@@ -7,7 +7,7 @@ plugins {
 
 android {
     namespace = "dev.kinetic.data.androidcapabilities"
-    compileSdk = 36
+    compileSdk = 37
 
     defaultConfig {
         minSdk = 26

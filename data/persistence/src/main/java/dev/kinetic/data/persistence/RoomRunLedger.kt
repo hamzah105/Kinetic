@@ -374,6 +374,8 @@ private fun EffectEntity.toDomain() = DurableEffectRecord(
 )
 
 private fun ToolInput.toStoredInput(): Pair<ToolInputKind, String?> = when (this) {
+    is dev.kinetic.core.tools.McpToolInput -> ToolInputKind.MCP_JSON to canonicalJson
+    is dev.kinetic.core.tools.AppFunctionToolInput -> ToolInputKind.APPFUNCTION_JSON to canonicalJson
     NoToolInput -> ToolInputKind.NONE to null
     is EchoInput -> ToolInputKind.ECHO_TEXT to text
     is ProtectedDemoInput -> ToolInputKind.PROTECTED_ACTION to action
@@ -386,6 +388,8 @@ private fun ToolInput.toStoredInput(): Pair<ToolInputKind, String?> = when (this
 }
 
 private fun ApprovalEntity.storedInput(): ToolInput = when (ToolInputKind.valueOf(inputKind)) {
+    ToolInputKind.MCP_JSON -> dev.kinetic.core.tools.McpToolInput(inputPayload.orEmpty())
+    ToolInputKind.APPFUNCTION_JSON -> dev.kinetic.core.tools.AppFunctionToolInput(inputPayload.orEmpty())
     ToolInputKind.NONE -> NoToolInput
     ToolInputKind.ECHO_TEXT -> EchoInput(inputPayload.orEmpty())
     ToolInputKind.PROTECTED_ACTION -> ProtectedDemoInput(inputPayload.orEmpty())

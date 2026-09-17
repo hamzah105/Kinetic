@@ -105,6 +105,7 @@ class OpenAiCompatibleModelProvider(
     configuration: CloudProviderConfiguration,
     private val apiKey: String,
     client: OkHttpClient = OkHttpClient(),
+    private val additionalToolIds: Set<String> = emptySet(),
 ) : ModelProvider {
     private val configuration = configuration.validated()
     private val json = Json { ignoreUnknownKeys = true }
@@ -124,7 +125,7 @@ class OpenAiCompatibleModelProvider(
 
     override fun toolSupport(): ModelToolSupport =
         if (configuration.structuredToolCallingEnabled) {
-            ModelToolSupport.Structured(EXPOSED_TOOL_IDS)
+            ModelToolSupport.Structured(EXPOSED_TOOL_IDS + additionalToolIds)
         } else {
             ModelToolSupport.Unavailable
         }
@@ -497,7 +498,7 @@ class OpenAiCompatibleModelProvider(
 
     private fun ModelRequest.withLocallyExposedTools(): ModelRequest = copy(
         availableTools = if (configuration.structuredToolCallingEnabled) {
-            availableTools.filter { it.id in EXPOSED_TOOL_IDS }
+            availableTools.filter { it.id in EXPOSED_TOOL_IDS + additionalToolIds }
         } else {
             emptyList()
         },
@@ -530,6 +531,8 @@ class ConfiguredModelProvider(
     private val localProvider: dev.kinetic.core.model.LocalModelProvider = dev.kinetic.core.model.SimulatedLocalModelProvider(),
     private val realLocalProvider: dev.kinetic.core.model.LocalModelProvider? = null,
     private val routingEnvironment: () -> RoutingEnvironment = { RoutingEnvironment() },
+    private val enabledMcpIds: () -> Set<String> = { emptySet() },
+    private val enabledAppFunctionIds: () -> Set<String> = { emptySet() },
 ) : ModelProvider, ConversationSummaryGenerator {
     override val providerId: String = "configured-provider"
     private var pinned: Pair<String, ModelProvider>? = null
@@ -566,7 +569,7 @@ class ConfiguredModelProvider(
         ProviderMode.FAKE -> fakeProvider.toolSupport()
         ProviderMode.LOCAL_SIMULATED -> localProvider.toolSupport()
         ProviderMode.LOCAL_LLAMA -> ModelToolSupport.Unavailable
-        else -> if (capabilities().structuredTools) ModelToolSupport.Structured(EXPOSED_TOOL_IDS)
+        else -> if (capabilities().structuredTools) ModelToolSupport.Structured(EXPOSED_TOOL_IDS + enabledMcpIds() + enabledAppFunctionIds())
             else ModelToolSupport.Unavailable
     }
 
@@ -664,8 +667,8 @@ class ConfiguredModelProvider(
             throw configurationFailure("The stored API key is unavailable. Clear and replace it explicitly.")
         } ?: throw configurationFailure("Configure an API key before using cloud mode.")
         return try {
-            if (snapshot.mode == ProviderMode.OPENAI) OpenAIResponsesProvider(snapshot.openAi, key, client, metrics)
-            else OpenAiCompatibleModelProvider(snapshot.cloud, key, client)
+            if (snapshot.mode == ProviderMode.OPENAI) OpenAIResponsesProvider(snapshot.openAi, key, client, metrics, additionalToolIds = (enabledMcpIds() + enabledAppFunctionIds()).toSet())
+            else OpenAiCompatibleModelProvider(snapshot.cloud, key, client, additionalToolIds = (enabledMcpIds() + enabledAppFunctionIds()).toSet())
         } catch (_: IllegalArgumentException) {
             throw configurationFailure("Cloud provider configuration is invalid.")
         }
@@ -843,6 +846,7 @@ internal fun toolSchemas(definitions: List<ToolDefinition>): JsonArray = buildJs
                     put("type", "object")
                     put("additionalProperties", false)
                     when (definition.inputContract.kind) {
+                        ToolInputKind.MCP_JSON, ToolInputKind.APPFUNCTION_JSON -> dev.kinetic.data.model.mcp.McpSchema(requireNotNull(definition.inputContract.jsonSchema)).json.forEach { (key, value) -> put(key, value) }
                         ToolInputKind.NONE -> put("properties", buildJsonObject {})
                         ToolInputKind.ECHO_TEXT -> {
                             put("properties", buildJsonObject {
@@ -994,6 +998,14 @@ internal fun decodeToolCall(
 
 private fun decodeToolInput(definition: ToolDefinition, arguments: String): ToolInput {
     if (arguments.length > 8_192) throw malformed("Tool arguments exceeded local bounds.")
+    if (definition.inputContract.kind == ToolInputKind.APPFUNCTION_JSON) {
+        if (definition.inputContract.validateJson?.invoke(arguments) != true) throw malformed("AppFunction arguments violated the reviewed schema.")
+        return dev.kinetic.core.tools.AppFunctionToolInput(dev.kinetic.data.model.mcp.canonical(dev.kinetic.data.model.mcp.strictJson(arguments, 8192)))
+    }
+    if (definition.inputContract.kind == ToolInputKind.MCP_JSON) {
+        if (definition.inputContract.validateJson?.invoke(arguments) != true) throw malformed("External tool arguments violated the reviewed schema.")
+        return dev.kinetic.core.tools.McpToolInput(dev.kinetic.data.model.mcp.canonical(dev.kinetic.data.model.mcp.strictJson(arguments, 8192)))
+    }
     val value = try {
         Json.parseToJsonElement(arguments.ifBlank { "{}" })
     } catch (_: Throwable) {
@@ -1002,6 +1014,11 @@ private fun decodeToolInput(definition: ToolDefinition, arguments: String): Tool
     val objectValue = value as? JsonObject
         ?: throw malformed("Tool arguments must be a JSON object.")
     return when (definition.inputContract.kind) {
+        ToolInputKind.APPFUNCTION_JSON -> throw malformed("AppFunction arguments were not validated.")
+        ToolInputKind.MCP_JSON -> {
+            if (definition.inputContract.validateJson?.invoke(arguments) != true) throw malformed("External tool arguments violated the reviewed schema.")
+            dev.kinetic.core.tools.McpToolInput(dev.kinetic.data.model.mcp.canonical(dev.kinetic.data.model.mcp.strictJson(arguments, 8192)))
+        }
         ToolInputKind.NONE -> {
             if (objectValue.isNotEmpty()) throw malformed("This tool accepts no arguments.")
             NoToolInput
@@ -1093,6 +1110,8 @@ private fun ToolCall.toWireToolCall(): JsonObject = buildJsonObject {
     put("function", buildJsonObject {
         put("name", toolId)
         put("arguments", when (val value = input) {
+            is dev.kinetic.core.tools.McpToolInput -> value.canonicalJson
+            is dev.kinetic.core.tools.AppFunctionToolInput -> value.canonicalJson
             NoToolInput -> "{}"
             is EchoInput -> buildJsonObject { put("text", value.text) }.toString()
             is ProtectedDemoInput -> buildJsonObject { put("action", value.action) }.toString()

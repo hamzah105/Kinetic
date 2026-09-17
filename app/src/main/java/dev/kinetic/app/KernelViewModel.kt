@@ -137,8 +137,18 @@ class KernelViewModel(application: Application) : AndroidViewModel(application) 
         },
     )
     val routingEnvironment = MutableStateFlow(dev.kinetic.core.model.RoutingEnvironment())
+    private val mcpHost = dev.kinetic.data.model.mcp.McpHost(dev.kinetic.data.model.mcp.AndroidMcpSettings(application))
+    private val appFunctionHost = dev.kinetic.data.model.appfunctions.AppFunctionHost(
+        dev.kinetic.data.model.appfunctions.AndroidAppFunctionSettings(application), dev.kinetic.data.model.appfunctions.AndroidAppFunctionCaller(application))
+    val appFunctionCatalogs = appFunctionHost.catalogs
+    val appFunctionBusy = MutableStateFlow(false)
+    val appFunctionStatus = MutableStateFlow("API36+ preview. Android caller eligibility is not assumed. No automatic discovery.")
+    val mcpServers = mcpHost.servers
+    val mcpBusy = MutableStateFlow(false)
+    val mcpStatus = MutableStateFlow("NO_AUTH only. External tools require explicit enable and approval.")
     private val configuredProvider = ConfiguredModelProvider(providerSettingsStore, realLocalProvider = realLocalProvider,
-        routingEnvironment = { routingEnvironment.value })
+        routingEnvironment = { routingEnvironment.value }, enabledMcpIds = { mcpHost.tools().map { it.definition.id }.toSet() },
+        enabledAppFunctionIds = { appFunctionHost.tools().map { it.definition.id }.toSet() })
     val routingDecision = configuredProvider.routingDecision
     val providerMetrics get() = configuredProvider.metrics.records
     val localDeviceFacts = dev.kinetic.data.model.AndroidLocalCapabilityProbe(application).read()
@@ -166,11 +176,11 @@ class KernelViewModel(application: Application) : AndroidViewModel(application) 
     private val memoryStatus = MutableStateFlow<String?>(null)
     private val summaryOperationActive = MutableStateFlow(false)
     private val summaryStatus = MutableStateFlow<String?>(null)
+    private val toolRegistry = ToolRegistry(DemoToolCatalog.create(clock) + AndroidCapabilityToolCatalog.create(capabilityDispatcher))
+        .apply { replaceMcp(mcpHost.tools()); replaceAppFunctions(appFunctionHost.tools()) }
     private val runtime = DefaultAgentRuntime(
         modelProvider = configuredProvider,
-        toolRegistry = ToolRegistry(
-            DemoToolCatalog.create(clock) + AndroidCapabilityToolCatalog.create(capabilityDispatcher),
-        ),
+        toolRegistry = toolRegistry,
         capabilityPolicy = DefaultCapabilityPolicy(),
         policyContext = PolicyContext(DistributionProfile.PLAY_CORE),
         approvalGate = approvalGate,
@@ -184,6 +194,60 @@ class KernelViewModel(application: Application) : AndroidViewModel(application) 
     )
 
     private var activeTurn: Job? = null
+    private fun externalOperationsIdle() = externalCatalogIdle(recoveryComplete.value,
+        activeTurn?.isActive == true, summaryOperationActive.value, memoryOperationActive.value,
+        mcpBusy.value, appFunctionBusy.value)
+    fun addMcpEndpoint(url: String) = manageMcp { add(url) }
+    fun addAppFunctionPackage(pkg: String) = manageAppFunctions { add(pkg) }
+    fun removeAppFunctionPackage(pkg: String) = manageAppFunctions { remove(pkg) }
+    fun refreshAppFunctions(pkg: String) = manageAppFunctions { refresh(pkg) }
+    fun enableAppFunction(id: String, enabled: Boolean) = manageAppFunctions { enable(id, enabled) }
+    private fun manageAppFunctions(operation: suspend dev.kinetic.data.model.appfunctions.AppFunctionHost.() -> Unit) {
+        if (!externalOperationsIdle()) return
+        appFunctionBusy.value = true
+        viewModelScope.launch {
+            try {
+                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { appFunctionHost.operation() }
+                appFunctionStatus.value = "Catalog saved. Review each external capability before enabling. Runtime eligibility is not guaranteed."
+            } catch (cancelled: CancellationException) { throw cancelled
+            } catch (failure: Exception) {
+                appFunctionStatus.value = (failure as? dev.kinetic.core.tools.AppFunctionAdapterException)?.error?.name ?: "APPFUNCTION_CONFIGURATION_INVALID"
+            } finally {
+                toolRegistry.replaceAppFunctions(appFunctionHost.tools())
+                appFunctionBusy.value = false
+            }
+        }
+    }
+    fun removeMcpEndpoint(id: String) = manageMcp { remove(id) }
+    fun refreshMcpEndpoint(id: String) = manageMcp { refresh(id) }
+    fun enableMcpTool(id: String, enabled: Boolean) = manageMcp { enable(id, enabled) }
+    fun mcpApprovalDisclosure(id: String): String? {
+        if (id.startsWith("appfn_")) {
+            val b = appFunctionCatalogs.value.flatMap { it.bindings }.singleOrNull { it.id == id }
+                ?: return "AppFunction binding unavailable; execution will fail closed."
+            return "External Android AppFunction\nPackage: ${b.descriptor.packageName}\nFunction: ${b.descriptor.functionId}\nSchema: ${b.fingerprint}\nThe target app receives these arguments. Android authorization is still required."
+        }
+        if (!id.startsWith("mcp_")) return null
+        val binding = mcpServers.value.flatMap { it.tools }.singleOrNull { it.id == id }
+            ?: return "External MCP binding is no longer available; execution will fail closed."
+        return "External HTTPS request to ${binding.endpoint.url}\nRemote tool: ${binding.name}\nSchema: ${binding.schema.fingerprint}\nThe server receives these arguments. Its response has no authority."
+    }
+    private fun manageMcp(operation: suspend dev.kinetic.data.model.mcp.McpHost.() -> Unit) {
+        if (!externalOperationsIdle()) return
+        mcpBusy.value = true
+        viewModelScope.launch {
+            try {
+                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { mcpHost.operation() }
+                mcpStatus.value = "Settings saved. Review external tools before enabling."
+            } catch (cancelled: CancellationException) { throw cancelled
+            } catch (failure: Exception) {
+                mcpStatus.value = (failure as? dev.kinetic.data.model.mcp.McpException)?.code?.name ?: "MCP_SETTINGS_UNAVAILABLE"
+            } finally {
+                toolRegistry.replaceMcp(mcpHost.tools())
+                mcpBusy.value = false
+            }
+        }
+    }
     private val activeSession: Flow<AgentSession?> = sessionId.flatMapLatest(sessionStore::observe)
     private val runtimeInputs = combine(
         runtime.state,
@@ -264,7 +328,7 @@ class KernelViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun sendMessage(content: String) {
-        if (!recoveryComplete.value || activeTurn?.isActive == true || content.isBlank()) return
+        if (!externalOperationsIdle() || content.isBlank()) return
         settingsError.value = null
         val trimmed = content.trim()
         ExplicitMemoryCommandParser.parse(trimmed)?.let { command ->
@@ -302,7 +366,7 @@ class KernelViewModel(application: Application) : AndroidViewModel(application) 
     fun startTurn(content: String) = sendMessage(content)
 
     fun newConversation() {
-        if (!recoveryComplete.value || activeTurn?.isActive == true) return
+        if (!externalOperationsIdle()) return
         val next = ids.nextId("conversation")
         persistActiveSession(next)
         sessionId.value = next
@@ -476,7 +540,7 @@ class KernelViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun compactCurrentSession() {
-        if (!recoveryComplete.value || activeTurn?.isActive == true) return
+        if (!externalOperationsIdle()) return
         val currentSessionId = sessionId.value
         activeTurn = viewModelScope.launch {
             summaryOperationActive.value = true
@@ -575,7 +639,7 @@ class KernelViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     private fun runMemoryOperation(block: suspend (String, String) -> Unit) {
-        if (!recoveryComplete.value || activeTurn?.isActive == true) return
+        if (!externalOperationsIdle()) return
         val currentSessionId = sessionId.value
         activeTurn = viewModelScope.launch {
             memoryOperationActive.value = true

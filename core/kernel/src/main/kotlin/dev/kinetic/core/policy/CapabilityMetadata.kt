@@ -16,6 +16,8 @@ enum class DistributionProfile {
 }
 
 enum class CapabilityCategory {
+    EXTERNAL_APPFUNCTION,
+    EXTERNAL_MCP,
     DEMONSTRATION,
     APP_INFORMATION,
     EXTERNAL_NAVIGATION,

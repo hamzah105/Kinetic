@@ -1,6 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Caller-only AppFunctions: normal permission; Android runtime allowlisting still applies. -->
+    <uses-permission android:name="android.permission.EXECUTE_APP_FUNCTIONS" />
 
     <application
         android:allowBackup="false"

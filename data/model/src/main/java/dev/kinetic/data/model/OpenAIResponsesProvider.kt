@@ -30,6 +30,7 @@ class OpenAIResponsesProvider internal constructor(
     client: OkHttpClient = OkHttpClient(),
     private val metrics: LocalProviderMetrics = LocalProviderMetrics(),
     private val endpoint: String = "https://api.openai.com/v1/responses",
+    private val additionalToolIds: Set<String> = emptySet(),
 ) : ModelProvider {
     override val providerId = "openai-responses"
     private val client = client.newBuilder().retryOnConnectionFailure(false)
@@ -46,7 +47,7 @@ class OpenAIResponsesProvider internal constructor(
 
     override fun capabilities() = configuration.capabilities()
     override fun toolSupport(): ModelToolSupport = if (capabilities().structuredTools)
-        ModelToolSupport.Structured(EXPOSED_TOOL_IDS) else ModelToolSupport.Unavailable
+        ModelToolSupport.Structured(EXPOSED_TOOL_IDS + additionalToolIds) else ModelToolSupport.Unavailable
 
     override fun finishTurn(turnId: String) {
         if (continuation?.request?.turnId == turnId) continuation = null
@@ -88,7 +89,7 @@ class OpenAIResponsesProvider internal constructor(
     }
 
     private fun exposed(request: ModelRequest) = if (capabilities().structuredTools)
-        request.availableTools.filter { it.id in EXPOSED_TOOL_IDS } else emptyList()
+        request.availableTools.filter { it.id in EXPOSED_TOOL_IDS + additionalToolIds } else emptyList()
 
     private fun envelope(input: JsonArray, tools: List<ToolDefinition>, instruction: String? = null): String =
         buildJsonObject {
@@ -224,6 +225,11 @@ private fun message(role: String, text: String) = buildJsonObject { put("role", 
 internal fun responsesFunctionSchemas(tools: List<ToolDefinition>): JsonArray = JsonArray(toolSchemas(tools).mapIndexed { index, wrapped ->
     val function = wrapped.jsonObject.getValue("function").jsonObject
     val parameters = function.getValue("parameters").jsonObject
+    if (tools[index].inputContract.kind in setOf(ToolInputKind.MCP_JSON, ToolInputKind.APPFUNCTION_JSON)) return@mapIndexed buildJsonObject {
+        put("type", "function"); put("name", function.getValue("name")); put("description", function.getValue("description"))
+        // Do not change a reviewed remote schema's optional arguments into required arguments.
+        put("strict", false); put("parameters", parameters)
+    }
     val properties = parameters.getValue("properties").jsonObject
     val nullable = tools[index].inputContract.kind == ToolInputKind.EMAIL_COMPOSITION
     buildJsonObject {

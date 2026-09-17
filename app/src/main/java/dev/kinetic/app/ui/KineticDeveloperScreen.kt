@@ -124,6 +124,7 @@ fun KineticDeveloperScreen(viewModel: KernelViewModel) {
                                     Text("Approval required", style = MaterialTheme.typography.titleMedium,
                                         modifier = Modifier.semantics { heading() })
                                     Text(approval.toolCall.toolId.replace('_', ' '), fontWeight = FontWeight.Bold)
+                                    viewModel.mcpApprovalDisclosure(approval.toolCall.toolId)?.let { Text(it) }
                                     Text(approval.toolCall.input.approvalSummary())
                                     Text(actionDisclosure(approval.toolCall.toolId), style = MaterialTheme.typography.bodySmall)
                                     Text("Nothing runs until you approve these exact arguments.", style = MaterialTheme.typography.bodySmall)
@@ -470,6 +471,8 @@ private fun ProviderSettingsPanel(uiState: KernelUiState, viewModel: KernelViewM
 
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Text("Models & privacy", style = MaterialTheme.typography.headlineSmall)
+        McpSettingsPanel(uiState, viewModel)
+        AppFunctionsSettingsPanel(uiState, viewModel)
         Text("Active: ${providerStatus(uiState)}")
         Text("Router mode: ${settings.routingMode}. Hybrid is experimental; no hidden retry or fallback.")
         Text("Hybrid may send selected conversation context to a configured cloud provider. Enable private / local-only to prohibit cloud.", style = MaterialTheme.typography.bodySmall)

@@ -591,11 +591,14 @@ class DefaultAgentRuntime(
 
     private suspend fun cancelTurn(sessionId: String, turnId: String, error: AgentError) {
         mutableStreamingOutput.value = null
+        val effect = runLedger.latestRun(sessionId)?.effect
+        val cancellation = if (effect?.turnId == turnId && effect.toolId.startsWith("appfn_") && effect.status == DurableEffectStatus.EXECUTING)
+            RestoredAgentError("APPFUNCTION_EFFECT_UNCERTAIN", "AppFunction completion is unknown. The turn stopped; the external effect may have occurred. No replay.") else error
         approvalGate.cancelPending(turnId)
-        runLedger.cancelTurn(turnId, error, clock.instant())
-        journal.record(sessionId, turnId, JournalEvent.CancellationRecorded(error.code))
+        runLedger.cancelTurn(turnId, cancellation, clock.instant())
+        journal.record(sessionId, turnId, JournalEvent.CancellationRecorded(cancellation.code))
         if (state.value.phase !in terminalPhases) {
-            transition(sessionId, turnId, RuntimeState.Cancelled(turnId, error))
+            transition(sessionId, turnId, RuntimeState.Cancelled(turnId, cancellation))
         }
     }
 
@@ -840,7 +843,8 @@ class DefaultAgentRuntime(
         snapshot: DurableRunSnapshot,
         phase: RuntimePhase,
     ): RuntimeRecovery.Restored {
-        val error = RecoveryInterrupted(phase)
+        val error: AgentError = if (snapshot.effect?.toolId?.startsWith("appfn_") == true && phase == RuntimePhase.EXECUTING)
+            RestoredAgentError("APPFUNCTION_EFFECT_UNCERTAIN", "AppFunction completion is unknown after interruption. No replay; initiate a new action explicitly if appropriate.") else RecoveryInterrupted(phase)
         runLedger.failTurn(snapshot.turn.turnId, error, clock.instant())
         journal.record(snapshot.turn.sessionId, snapshot.turn.turnId, JournalSanitizer.error(error))
         journal.record(

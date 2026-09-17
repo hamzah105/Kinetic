@@ -6,6 +6,8 @@ import java.net.URI
 import java.security.MessageDigest
 
 enum class ToolInputKind {
+    APPFUNCTION_JSON,
+    MCP_JSON,
     NONE,
     ECHO_TEXT,
     PROTECTED_ACTION,
@@ -30,6 +32,23 @@ sealed interface ToolInput {
     }
 
     fun canonicalAuthorizationValue(): String
+}
+
+data class AppFunctionToolInput(val canonicalJson: String) : ToolInput {
+    init { require(canonicalJson.length <= 8192) }
+    override val kind = ToolInputKind.APPFUNCTION_JSON
+    override fun journalSummary() = "appFunctionArgumentsLength=${canonicalJson.length}"
+    override fun approvalSummary() = "External AppFunction arguments (untrusted data): $canonicalJson"
+    override fun canonicalAuthorizationValue() = "${kind.name}\u0000$canonicalJson"
+}
+
+/** Opaque bounded data; the registered adapter owns strict schema validation, never execution text parsing. */
+data class McpToolInput(val canonicalJson: String) : ToolInput {
+    init { require(canonicalJson.length <= 8192) }
+    override val kind = ToolInputKind.MCP_JSON
+    override fun journalSummary() = "externalArgumentsLength=${canonicalJson.length}"
+    override fun approvalSummary() = "External MCP arguments (untrusted data): $canonicalJson"
+    override fun canonicalAuthorizationValue() = "${kind.name}\u0000$canonicalJson"
 }
 
 data object NoToolInput : ToolInput {
@@ -124,9 +143,13 @@ data class ComposeEmailInput(
 data class ToolInputContract(
     val kind: ToolInputKind,
     val description: String,
+    val jsonSchema: String? = null,
+    val validateJson: ((String) -> Boolean)? = null,
 ) {
     fun accepts(input: ToolInput): Boolean = when {
         input.kind != kind -> false
+        input is McpToolInput -> validateJson?.invoke(input.canonicalJson) == true
+        input is AppFunctionToolInput -> validateJson?.invoke(input.canonicalJson) == true
         input is EchoInput -> input.text.length <= MAX_TOOL_TEXT_LENGTH
         input is ProtectedDemoInput -> input.action.length <= MAX_TOOL_TEXT_LENGTH
         input is OpenHttpsUrlInput -> isValidHttpsUrl(input.url)

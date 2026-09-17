@@ -31,8 +31,8 @@ data class ModelFailure(
 data class ToolFailure(
     val toolId: String,
     override val userMessage: String = "The tool could not complete the request.",
+    override val code: String = "tool_failure",
 ) : AgentError {
-    override val code: String = "tool_failure"
 }
 
 data class PermissionFailure(

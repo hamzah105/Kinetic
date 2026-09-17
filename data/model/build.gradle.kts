@@ -7,7 +7,7 @@ plugins {
 
 android {
     namespace = "dev.kinetic.data.model"
-    compileSdk = 36
+    compileSdk = 37
     ndkVersion = "28.2.13676358"
 
     defaultConfig {
@@ -48,6 +48,7 @@ dependencies {
     implementation(libs.kotlinx.coroutines.core)
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.okhttp)
+    implementation("androidx.appfunctions:appfunctions:1.0.0-alpha11")
 
     testImplementation(kotlin("test-junit"))
     testImplementation(libs.junit4)

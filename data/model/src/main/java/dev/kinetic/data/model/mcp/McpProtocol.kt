@@ -30,7 +30,7 @@ data class McpEndpoint(val serverId: String, val url: String) {
 }
 
 /** Scan before parsing: depth, duplicate keys, token count and strict JSON grammar. */
-internal fun strictJson(text: String, limit: Int = 65536): JsonElement {
+internal fun strictJson(text: String, limit: Int = 65536, maxNodes: Int = 2048): JsonElement {
     if (text.toByteArray(Charsets.UTF_8).size > limit) reject(McpError.MCP_RESULT_TOO_LARGE)
     var at = 0; var nodes = 0
     fun whitespace() { while (at < text.length && text[at] in " \r\n\t") at++ }
@@ -46,7 +46,7 @@ internal fun strictJson(text: String, limit: Int = 65536): JsonElement {
         reject()
     }
     fun value(depth: Int) {
-        whitespace(); if (depth > 8 || ++nodes > 2048 || at >= text.length) reject()
+        whitespace(); if (depth > 8 || ++nodes > maxNodes || at >= text.length) reject()
         when (text[at]) {
             '{', '[' -> {
                 val objectValue = text[at++] == '{'; val end = if (objectValue) '}' else ']'
@@ -82,6 +82,7 @@ internal fun JsonObject.text(key: String): String = (this[key] as? JsonPrimitive
 /** Deliberately narrow draft2020-12 subset: closed flat objects of bounded scalar values. */
 class McpSchema(raw: String) {
     val json: JsonObject
+    val preview: String get() = json.toString()
     val fingerprint: String
     private val properties: JsonObject
     private val required: Set<String>
@@ -90,6 +91,7 @@ class McpSchema(raw: String) {
             json = strictJson(raw, 8192) as? JsonObject ?: reject(McpError.MCP_SCHEMA_INVALID)
             require(json.keys.all { it in setOf("type", "properties", "required", "additionalProperties", "description", "title", "\$schema") })
             require(json.text("type") == "object" && json["additionalProperties"] == JsonPrimitive(false))
+            listOf("description", "title").forEach { key -> json[key]?.let { require(json.text(key).length <= 1000) } }
             json["\$schema"]?.let { require(it == JsonPrimitive("https://json-schema.org/draft/2020-12/schema")) }
             properties = (json["properties"] as? JsonObject) ?: JsonObject(emptyMap()).also { require(json["properties"] == null) }
             require(properties.size <= 16)
@@ -99,7 +101,9 @@ class McpSchema(raw: String) {
             val headers = mutableSetOf<String>()
             properties.forEach { (key, element) ->
                 require(key.matches(Regex("[A-Za-z_][A-Za-z0-9_]{0,63}")))
+                require(!Regex("(?i)(password|passcode|secret|token|api_?key|credential|authorization)").containsMatchIn(key))
                 val property = element as? JsonObject ?: reject()
+                listOf("description", "title").forEach { key -> property[key]?.let { require(property.text(key).length <= 1000) } }
                 require(property.keys.all { it in setOf("type", "description", "title", "enum", "minLength", "maxLength", "minimum", "maximum", "x-mcp-header") })
                 val type = property.text("type"); require(type in setOf("string", "integer", "boolean"))
                 property["x-mcp-header"]?.let {
@@ -107,15 +111,17 @@ class McpSchema(raw: String) {
                     require(header.matches(Regex("[A-Za-z][A-Za-z0-9-]{0,39}")) && headers.add(header.lowercase()))
                 }
                 listOf("minLength", "maxLength").forEach { keyword -> property[keyword]?.let {
-                    require(type == "string" && it.jsonPrimitive.intOrNull in 0..2000)
+                    require(type == "string" && !it.jsonPrimitive.isString && it.jsonPrimitive.intOrNull in 0..2000)
                 } }
                 listOf("minimum", "maximum").forEach { keyword -> property[keyword]?.let {
                     require(type == "integer" && it.jsonPrimitive.longOrNull != null && !it.jsonPrimitive.isString)
                 } }
                 property["enum"]?.let { values -> require(values is JsonArray && values.size in 1..16)
                     values.forEach { require(validScalar(it, property, checkEnum = false)) } }
+                require((property["minLength"]?.jsonPrimitive?.intOrNull ?: 0) <= (property["maxLength"]?.jsonPrimitive?.intOrNull ?: 2000))
+                require((property["minimum"]?.jsonPrimitive?.longOrNull ?: Long.MIN_VALUE) <= (property["maximum"]?.jsonPrimitive?.longOrNull ?: Long.MAX_VALUE))
             }
-            require(!SensitiveMemoryFilter.isSensitive(raw))
+            require(!SensitiveMemoryFilter.isSensitive(json.toString()))
             fingerprint = sha(canonical(JsonObject(json + ("required" to JsonArray(required.sorted().map(::JsonPrimitive))))))
         } catch (_: Exception) { reject(McpError.MCP_SCHEMA_INVALID) }
     }
@@ -138,7 +144,7 @@ class McpSchema(raw: String) {
         val value = strictJson(raw, 8192) as? JsonObject ?: reject(McpError.MCP_SCHEMA_INVALID)
         if (!value.keys.containsAll(required) || !properties.keys.containsAll(value.keys) ||
             value.any { (key, v) -> !validScalar(v, properties.getValue(key).jsonObject) } ||
-            SensitiveMemoryFilter.isSensitive(raw)) reject(McpError.MCP_SCHEMA_INVALID)
+            SensitiveMemoryFilter.isSensitive(value.toString()) || value.values.any { SensitiveMemoryFilter.isSensitive(it.jsonPrimitive.content) }) reject(McpError.MCP_SCHEMA_INVALID)
         return value
     }
     fun headers(arguments: JsonObject): Map<String, String> = buildMap {
